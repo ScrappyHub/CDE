@@ -1,0 +1,31 @@
+using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Graphics;
+using Microsoft.Xna.Framework.Input;
+
+namespace CDE.Runtime.Engine;
+
+public abstract class CdeGame : Game
+{
+    private readonly GraphicsDeviceManager _gdm;
+
+    protected CdeGame()
+    {
+        _gdm = new GraphicsDeviceManager(this);
+        IsMouseVisible = true;
+        Content.RootDirectory = "Content";
+    }
+
+    protected GraphicsDeviceManager GraphicsManager => _gdm;
+
+    protected override void Initialize()
+    {
+        base.Initialize();
+        Window.AllowUserResizing = true;
+    }
+
+    protected void ExitIfRequested()
+    {
+        var kb = Keyboard.GetState();
+        if (kb.IsKeyDown(Keys.Escape)) Exit();
+    }
+}

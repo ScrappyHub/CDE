@@ -1,0 +1,12 @@
+{
+  "schema": "cde.level.v1",
+  "tileSize": 16,
+  "width": 40,
+  "height": 22,
+  "layers": [
+    { "type": "tile", "name": "solid", "data": [] }
+  ],
+  "entities": [
+    { "type": "player", "x": 40, "y": 40 }
+  ]
+}

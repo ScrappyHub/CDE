@@ -1,0 +1,177 @@
+using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Graphics;
+using Microsoft.Xna.Framework.Input;
+using CDE.Runtime.Engine;
+using CDE.Runtime.Engine.Graphics;
+using CDE.Runtime.Engine.Input;
+using CDE.Runtime.Engine.Debug;
+using CDE.Runtime.Engine.Platformer.Tilemap;
+using CDE.Runtime.Engine.Platformer.Controller;
+
+namespace CDE.Game;
+
+public sealed class GameRoot : CdeGame
+{
+    // CDE law: all must be supported; default 320x180
+    private static readonly (int w, int h) DefaultVirtual = (320, 180);
+
+    private SpriteBatch? _sb;
+    private PixelPerfectRenderer? _ppr;
+    private PixelPerfectCamera2D? _cam;
+    private InputMap? _input;
+    private DebugOverlay? _dbg;
+
+    private Texture2D? _px;
+    private SpriteFont? _font;
+
+    private Tilemap? _map;
+    private Texture2D? _tileTex;
+    private PlatformerController? _ctrl;
+    private PlatformerTuning? _tun;
+
+    private const double FixedDt = 1.0 / 60.0;
+    private double _accum;
+
+    public GameRoot()
+    {
+        IsFixedTimeStep = false;
+        GraphicsManager.SynchronizeWithVerticalRetrace = true;
+    }
+
+    protected override void LoadContent()
+    {
+        _sb = new SpriteBatch(GraphicsDevice);
+        _ppr = new PixelPerfectRenderer(GraphicsDevice, DefaultVirtual.w, DefaultVirtual.h);
+        _cam = new PixelPerfectCamera2D { Origin = new Vector2(DefaultVirtual.w / 2f, DefaultVirtual.h / 2f) };
+
+        _input = new InputMap();
+        _input.Set(InputAction.MoveLeft, Keys.A, Keys.Left);
+        _input.Set(InputAction.MoveRight, Keys.D, Keys.Right);
+        _input.Set(InputAction.Jump, Keys.Space);
+        _input.Set(InputAction.Pause, Keys.Escape);
+
+        _dbg = new DebugOverlay { Enabled = true };
+
+        // 1x1 pixel for debug draws
+        _px = new Texture2D(GraphicsDevice, 1, 1);
+        _px.SetData(new[] { Color.White });
+
+        // tiny tile texture (solid gray)
+        _tileTex = new Texture2D(GraphicsDevice, 16, 16);
+        var td = new Color[16 * 16];
+        for (int i = 0; i < td.Length; i++) td[i] = new Color(90, 90, 90);
+        _tileTex.SetData(td);
+
+        TryLoadFont();
+        BuildTestLevel();
+
+        _tun = new PlatformerTuning();
+        _ctrl = new PlatformerController(_tun, startX: 40, startY: 40);
+    }
+
+    private void TryLoadFont()
+    {
+        try { _font = Content.Load<SpriteFont>("DefaultFont"); }
+        catch { _font = null; }
+    }
+
+    private void BuildTestLevel()
+    {
+        // v0.2: procedural test room; later load from JSON
+        _map = new Tilemap(tileSize: 16, width: 40, height: 22);
+
+        // Floor
+        for (int x = 0; x < _map.Width; x++) _map.SetSolid(x, _map.Height - 2, true);
+
+        // A couple platforms
+        for (int x = 8; x < 16; x++) _map.SetSolid(x, 14, true);
+        for (int x = 22; x < 30; x++) _map.SetSolid(x, 10, true);
+
+        // Left wall chunk
+        for (int y = 6; y < _map.Height - 2; y++) _map.SetSolid(2, y, true);
+    }
+
+    protected override void OnExiting(object sender, System.EventArgs args)
+    {
+        _ppr?.Dispose();
+        base.OnExiting(sender, args);
+    }
+
+    protected override void Update(GameTime gameTime)
+    {
+        // CDE_KERNEL_MENU_INPUT_GATE_V1
+        if (global::CDE.Runtime.Engine.KernelOverlayState.MenuOpen)
+        {
+            if (_dbg != null) _dbg.Update(gameTime);
+            base.Update(gameTime);
+            return;
+        }
+        ExitIfRequested();
+        if (_input == null || _cam == null || _dbg == null || _ctrl == null || _map == null) return;
+
+        _input.Update();
+        if (_input.Get(InputAction.Pause).Pressed) Exit();
+
+        _accum += gameTime.ElapsedGameTime.TotalSeconds;
+        while (_accum >= FixedDt)
+        {
+            _ctrl.FixedTick60(_input, _map);
+            _accum -= FixedDt;
+        }
+
+        // camera follows player center
+        _cam.Follow(new Vector2(_ctrl.X + (_ctrl.W / 2f), _ctrl.Y + (_ctrl.H / 2f)));
+            if (_dbg != null) _dbg.Update(gameTime);
+        base.Update(gameTime);
+    }
+
+    protected override void Draw(GameTime gameTime)
+    {
+        if (_sb == null || _ppr == null || _cam == null || _px == null || _tileTex == null || _map == null || _ctrl == null) return;
+
+        var pp = GraphicsDevice.PresentationParameters;
+        _ppr.OnBackBufferResized(pp.BackBufferWidth, pp.BackBufferHeight);
+
+        _ppr.BeginVirtual();
+
+        _sb.Begin(
+            SpriteSortMode.Deferred,
+            BlendState.AlphaBlend,
+            SamplerState.PointClamp,
+            DepthStencilState.None,
+            RasterizerState.CullNone,
+            effect: null,
+            transformMatrix: _cam.GetViewMatrix()
+        );
+
+        // Draw tiles
+        for (int y = 0; y < _map.Height; y++)
+        for (int x = 0; x < _map.Width; x++)
+        {
+            if (_map.IsSolid(x, y))
+            {
+                var pxX = x * _map.TileSize;
+                var pxY = y * _map.TileSize;
+                _sb.Draw(_tileTex, new Vector2(pxX, pxY), Color.White);
+            }
+        }
+
+        // Draw player (white rect)
+        _sb.Draw(_px, new Rectangle((int)System.Math.Round(_ctrl.X), (int)System.Math.Round(_ctrl.Y), (int)_ctrl.W, (int)_ctrl.H), Color.White);
+
+        _sb.End();
+
+        if (_font != null && _dbg != null)
+        {
+            _sb.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.PointClamp, DepthStencilState.None, RasterizerState.CullNone);
+            _dbg.Draw(_sb, _font);
+            _sb.End();
+        }
+
+        _ppr.EndVirtualAndBlitToBackbuffer(_sb, clearColor: Color.Black);
+
+        base.Draw(gameTime);
+    }
+}
+
+

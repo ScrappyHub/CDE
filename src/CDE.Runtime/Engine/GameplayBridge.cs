@@ -1,0 +1,102 @@
+using System;
+using System.IO;
+using System.Text;
+using CDE.Gameplay.Kernel;
+
+namespace CDE.Runtime.Engine;
+
+internal sealed class GameplayBridge
+{
+    public enum Mode { Yume, Mario }
+    public Mode ActiveMode { get; private set; } = Mode.Yume;
+
+    public string SceneId { get; private set; } = "StartRoom";
+    public float X { get; private set; } = 1f;
+    public float Y { get; private set; } = 1f;
+
+    public int MaxHp { get; private set; } = 5;
+    public int Hp { get; private set; } = 5;
+
+    public readonly FlagStore Flags = new();
+    private WarpKernel? _warp;
+    private KernelWorld? _mario;
+    public string Last { get; private set; } = "";
+
+    public void ResetToDefaults()
+    {
+        Hp = MaxHp;
+        SetMode(Mode.Yume);
+    }
+
+    public void ApplyDamage(int amount)
+    {
+        if (amount <= 0) return;
+        Hp = Math.Max(0, Hp - amount);
+    }
+
+    public void Heal(int amount)
+    {
+        if (amount <= 0) return;
+        Hp = Math.Min(MaxHp, Hp + amount);
+    }
+
+    public void SetMode(Mode m)
+    {
+        ActiveMode = m;
+        if (m == Mode.Yume) { SceneId = "StartRoom"; X = 1f; Y = 1f; }
+        else { SceneId = "MarioRoom"; X = 0f; Y = 0f; }
+        Last = "";
+    }
+
+    public void LoadFromRepoRoot(string repoRoot)
+    {
+        var yumePath = Path.Combine(repoRoot, "assets_src", "gameplay", "warp_graph.v1.json");
+        var marioPath = Path.Combine(repoRoot, "assets_src", "gameplay", "mario_graph.v1.json");
+
+        if (File.Exists(yumePath))
+        {
+            var json = File.ReadAllText(yumePath, new UTF8Encoding(false));
+            var g = WarpKernel.LoadWarpGraphJson(json);
+            _warp = new WarpKernel(g, Flags);
+        }
+
+        if (File.Exists(marioPath))
+        {
+            var json = File.ReadAllText(marioPath, new UTF8Encoding(false));
+            _mario = KernelWorld.LoadMarioJson(json);
+        }
+    }
+
+    public int GetCoins() => _mario?.Inventory.GetCount("coin") ?? 0;
+    public int GetCoinTarget() => _mario?.Objectives.CoinTarget ?? 0;
+
+    public void Move(float dx, float dy){ X += dx; Y += dy; }
+
+    public void Tick()
+    {
+        if (ActiveMode == Mode.Yume)
+        {
+            if (_warp == null) { Last = ""; return; }
+            var r = _warp.TryWarp(new WarpKernel.WarpRequest(SceneId, X, Y));
+            if (r.Warped)
+            {
+                SceneId = r.NewSceneId; X = r.SpawnX; Y = r.SpawnY;
+                Last = r.MatchedWarpId;
+                return;
+            }
+            Last = "";
+        }
+        else
+        {
+            if (_mario == null) { Last = ""; return; }
+            var p = new KernelWorld.PlayerState(SceneId, X, Y);
+            var r = _mario.Tick(p);
+            SceneId = r.Player.SceneId; X = r.Player.X; Y = r.Player.Y;
+            Last = r.MatchedTriggerId ?? "";
+            if (!string.IsNullOrWhiteSpace(Last) && Last.IndexOf("damage", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                ApplyDamage(1);
+            }
+        }
+    }
+}

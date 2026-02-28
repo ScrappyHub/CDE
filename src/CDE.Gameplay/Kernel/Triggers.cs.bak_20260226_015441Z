@@ -1,0 +1,33 @@
+namespace CDE.Gameplay.Kernel;
+
+public abstract class Trigger
+{
+    public string Id { get; init; } = "";
+    public string SceneId { get; init; } = "";
+    public RectF Zone { get; init; } = new RectF(0,0,0,0);
+    public bool OneShot { get; init; } = true;
+    public string FiredFlag { get; init; } = ""; // if set, engine sets this flag when fired
+
+    public bool IsActive(FlagStore flags)
+    {
+        if (flags == null) return true;
+        if (!OneShot) return true;
+        if (string.IsNullOrWhiteSpace(FiredFlag)) return true;
+        return !flags.GetBool(FiredFlag);
+    }
+}
+
+public sealed class PickupTrigger : Trigger
+{
+    public string ItemId { get; init; } = "coin";
+    public int Amount { get; init; } = 1;
+}
+
+public sealed class ExitTrigger : Trigger
+{
+    public string ToScene { get; init; } = "";
+    public float SpawnX { get; init; } = 0f;
+    public float SpawnY { get; init; } = 0f;
+    public string RequireFlag { get; init; } = "";
+    public int RequireCoins { get; init; } = 0;
+}

@@ -1,0 +1,106 @@
+using Microsoft.Xna.Framework;
+using Microsoft.Xna.Framework.Graphics;
+using Microsoft.Xna.Framework.Input;
+using XnaGame = Microsoft.Xna.Framework.Game;
+
+namespace CDE.Runtime.Engine;
+
+internal sealed class KernelOverlayComponent : DrawableGameComponent
+{
+    private readonly GameplayBridge _bridge;
+    private SpriteBatch? _sb;
+    private Texture2D? _px;
+    private KeyboardState _prev;
+    private bool _menu;
+
+    public KernelOverlayComponent(XnaGame game, GameplayBridge bridge) : base(game)
+    {
+        _bridge = bridge;
+        Enabled = true;
+        Visible = true;
+        UpdateOrder = int.MaxValue;
+        DrawOrder = int.MaxValue;
+    }
+
+    protected override void LoadContent()
+    {
+        _sb = new SpriteBatch(GraphicsDevice);
+        _px = new Texture2D(GraphicsDevice, 1, 1);
+        _px.SetData(new[] { Color.White });
+        base.LoadContent();
+    }
+
+    private static bool Pressed(Keys k, KeyboardState now, KeyboardState prev) => now.IsKeyDown(k) && !prev.IsKeyDown(k);
+
+    public override void Update(GameTime gameTime)
+    {
+        var k = Keyboard.GetState();
+        float s = 0.10f;
+
+        if (Pressed(Keys.Escape, k, _prev)) _menu = !_menu;
+
+        // IMPORTANT: do NOT steal arrow/WASD from the game. Overlay uses IJKL only.
+        if (_menu)
+        {
+            // CDE_KERNEL_OVERLAY_MENUONLY_IJKL_V1
+            if (k.IsKeyDown(Keys.J)) _bridge.Move(-s, 0);
+            if (k.IsKeyDown(Keys.L)) _bridge.Move( s, 0);
+            if (k.IsKeyDown(Keys.I)) _bridge.Move(0, -s);
+            if (k.IsKeyDown(Keys.K)) _bridge.Move(0,  s);
+        }
+
+        if (Pressed(Keys.F1, k, _prev)) _bridge.SetMode(GameplayBridge.Mode.Yume);
+        if (Pressed(Keys.F2, k, _prev)) _bridge.SetMode(GameplayBridge.Mode.Mario);
+
+        if (Pressed(Keys.F5, k, _prev)) _bridge.ResetToDefaults();
+        if (Pressed(Keys.OemMinus, k, _prev)) _bridge.ApplyDamage(1);
+        if (Pressed(Keys.OemPlus,  k, _prev)) _bridge.Heal(1);
+
+        _bridge.Tick();
+        _prev = k;
+
+        var coins = _bridge.GetCoins();
+        var tgt = _bridge.GetCoinTarget();
+        var key = _bridge.Flags.GetBool("has_dream_key") ? "1" : "0";
+        var last = string.IsNullOrWhiteSpace(_bridge.Last) ? "-" : _bridge.Last;
+        var menu = _menu ? "ON" : "off";
+
+        Game.Window.Title =
+            "CDE KERNEL GUI v3d | MENU=" + menu +
+            " | mode=" + _bridge.ActiveMode +
+            " scene=" + _bridge.SceneId +
+            " pos=(" + _bridge.X.ToString("0.00") + "," + _bridge.Y.ToString("0.00") + ")" +
+            " HP=" + _bridge.Hp + "/" + _bridge.MaxHp +
+            " coins=" + coins + "/" + tgt +
+            " key=" + key +
+            " last=" + last +
+            " | (ESC menu, IJKL move, F5 reset, +/- dmg/heal)";
+
+        base.Update(gameTime);
+    }
+
+    public override void Draw(GameTime gameTime)
+    {
+        if (_sb == null || _px == null){ base.Draw(gameTime); return; }
+        _sb.Begin(samplerState: SamplerState.PointClamp);
+
+        // debug marker (bridge position)
+        int sx = 20 + (int)(_bridge.X * 12f);
+        int sy = 60 + (int)(_bridge.Y * 12f);
+        _sb.Draw(_px, new Rectangle(sx, sy, 18, 18), Color.LimeGreen);
+
+        // menu panel (visual confirmation)
+        if (_menu)
+        {
+            _sb.Draw(_px, new Rectangle(10, 10, 300, 160), new Color(0, 0, 0, 180));
+            _sb.Draw(_px, new Rectangle(20, 30, 280, 20), new Color(60, 60, 60, 220));
+            _sb.Draw(_px, new Rectangle(20, 60, 280, 20), new Color(60, 60, 60, 220));
+            _sb.Draw(_px, new Rectangle(20, 90, 280, 20), new Color(60, 60, 60, 220));
+            _sb.Draw(_px, new Rectangle(20, 120,280, 20), new Color(60, 60, 60, 220));
+        }
+
+        _sb.End();
+        base.Draw(gameTime);
+    }
+}
+

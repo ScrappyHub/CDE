@@ -1,0 +1,30 @@
+namespace CDE.Gameplay.Kernel;
+
+public sealed class Inventory
+{
+    private readonly Dictionary<string,int> _counts = new(StringComparer.Ordinal);
+
+    public int GetCount(string itemId)
+    {
+        if (string.IsNullOrWhiteSpace(itemId)) return 0;
+        return _counts.TryGetValue(itemId, out var v) ? v : 0;
+    }
+
+    public void Add(string itemId, int amount)
+    {
+        if (string.IsNullOrWhiteSpace(itemId)) return;
+        if (amount <= 0) return;
+        _counts[itemId] = GetCount(itemId) + amount;
+    }
+
+    public bool TryConsume(string itemId, int amount)
+    {
+        if (string.IsNullOrWhiteSpace(itemId)) return false;
+        if (amount <= 0) return true;
+        var cur = GetCount(itemId);
+        if (cur < amount) return false;
+        var next = cur - amount;
+        if (next == 0) _counts.Remove(itemId); else _counts[itemId] = next;
+        return true;
+    }
+}

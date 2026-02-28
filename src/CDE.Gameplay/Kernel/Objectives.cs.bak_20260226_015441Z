@@ -1,0 +1,12 @@
+namespace CDE.Gameplay.Kernel;
+
+public sealed class Objectives
+{
+    public int CoinTarget { get; set; } = 0;
+    public bool IsCoinTargetMet(Inventory inv)
+    {
+        if (inv == null) return false;
+        if (CoinTarget <= 0) return true;
+        return inv.GetCount("coin") >= CoinTarget;
+    }
+}

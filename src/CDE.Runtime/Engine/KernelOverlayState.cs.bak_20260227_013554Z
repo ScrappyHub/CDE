@@ -1,0 +1,7 @@
+namespace CDE.Runtime.Engine;
+
+internal static class KernelOverlayState
+{
+    // CDE_KERNEL_OVERLAY_STATE_V1
+    public static bool MenuOpen { get; set; } = false;
+}

@@ -1,0 +1,22 @@
+{
+  "warps": [
+    {
+      "id": "start_to_dreamhall_setkey",
+      "fromScene": "StartRoom",
+      "toScene": "DreamHall",
+      "spawnX": 2,
+      "spawnY": 2,
+      "zone": { "x": 10, "y": 0, "w": 6, "h": 6 },
+      "setFlag": "has_dream_key"
+    },
+    {
+      "id": "dreamhall_to_secret_requires_key",
+      "fromScene": "DreamHall",
+      "toScene": "SecretRoom",
+      "spawnX": 1,
+      "spawnY": 1,
+      "zone": { "x": 0, "y": 8, "w": 6, "h": 6 },
+      "setFlag": ""
+    }
+  ]
+}

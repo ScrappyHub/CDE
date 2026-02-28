@@ -1,0 +1,16 @@
+# build outputs
+bin/
+obj/
+
+# user-specific
+.vs/
+*.user
+*.suo
+
+# generated assets + receipts can be ignored if you want to keep builds local
+proofs/
+src/CDE.Game/Assets/assets_build/
+assets_build/
+
+# optional: local scratch
+**/_scratch/

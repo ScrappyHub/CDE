@@ -1,0 +1,238 @@
+param([Parameter(Mandatory=$true)][string]$RepoRoot)
+$ErrorActionPreference="Stop"
+Set-StrictMode -Version Latest
+function Die([string]$m){ throw $m }
+function Ensure-Dir([string]$p){ if([string]::IsNullOrWhiteSpace($p)){ Die "Ensure-Dir: empty" }; if(-not (Test-Path -LiteralPath $p -PathType Container)){ New-Item -ItemType Directory -Force -Path $p | Out-Null } }
+function Write-Utf8NoBomLf([string]$path,[string]$text){ $dir = Split-Path -Parent $path; if(-not [string]::IsNullOrWhiteSpace($dir)){ Ensure-Dir $dir }; $u = New-Object System.Text.UTF8Encoding($false); $bytes = $u.GetBytes($text.Replace("`r`n","`n")); [System.IO.File]::WriteAllBytes($path,$bytes) }
+function Backup-IfExists([string]$p){ if(Test-Path -LiteralPath $p -PathType Leaf){ $ts=[DateTime]::UtcNow.ToString("yyyyMMdd_HHmmssZ"); $bak=($p + ".bak_" + $ts); Copy-Item -LiteralPath $p -Destination $bak -Force; Write-Host ("BACKUP: " + $bak) -ForegroundColor Yellow } }
+function ReadAllTextUtf8([string]$p){ return [System.IO.File]::ReadAllText($p,[System.Text.Encoding]::UTF8) }
+
+$RepoRootAbs = (Resolve-Path -LiteralPath $RepoRoot).Path
+$Sln = Join-Path $RepoRootAbs "CDE.sln"
+if(-not (Test-Path -LiteralPath $Sln -PathType Leaf)){ Die ("MISSING_SOLUTION: " + $Sln) }
+
+# --- Host is CDE.Runtime/Engine/CdeGame.cs (you already proved it) ---
+$HostPath = Join-Path $RepoRootAbs "src\CDE.Runtime\Engine\CdeGame.cs"
+if(-not (Test-Path -LiteralPath $HostPath -PathType Leaf)){ Die ("MISSING_HOST: " + $HostPath) }
+
+# --- Write overlay + bridge into CDE.Runtime.Engine (avoid circular refs) ---
+$EngineDir = Join-Path $RepoRootAbs "src\CDE.Runtime\Engine"
+Ensure-Dir $EngineDir
+
+$BridgePath = Join-Path $EngineDir "GameplayBridge.cs"
+Backup-IfExists $BridgePath
+$bridge = @(
+  'using System.IO;',
+  'using System.Text;',
+  'using CDE.Gameplay.Kernel;',
+  '',
+  'namespace CDE.Runtime.Engine;',
+  '',
+  'internal sealed class GameplayBridge',
+  '{',
+  '    public enum Mode { Yume, Mario }',
+  '    public Mode ActiveMode { get; private set; } = Mode.Yume;',
+  '',
+  '    public string SceneId { get; private set; } = "StartRoom";',
+  '    public float X { get; private set; } = 1f;',
+  '    public float Y { get; private set; } = 1f;',
+  '',
+  '    public readonly FlagStore Flags = new();',
+  '    private WarpKernel? _warp;',
+  '    private KernelWorld? _mario;',
+  '    public string Last { get; private set; } = "";',
+  '',
+  '    public void SetMode(Mode m)',
+  '    {',
+  '        ActiveMode = m;',
+  '        if (m == Mode.Yume) { SceneId = "StartRoom"; X = 1f; Y = 1f; }',
+  '        else { SceneId = "MarioRoom"; X = 0f; Y = 0f; }',
+  '        Last = "";',
+  '    }',
+  '',
+  '    public void LoadFromRepoRoot(string repoRoot)',
+  '    {',
+  '        var yumePath = Path.Combine(repoRoot, "assets_src", "gameplay", "warp_graph.v1.json");',
+  '        var marioPath = Path.Combine(repoRoot, "assets_src", "gameplay", "mario_graph.v1.json");',
+  '',
+  '        if (File.Exists(yumePath))',
+  '        {',
+  '            var json = File.ReadAllText(yumePath, new UTF8Encoding(false));',
+  '            var g = WarpKernel.LoadWarpGraphJson(json);',
+  '            _warp = new WarpKernel(g, Flags);',
+  '        }',
+  '',
+  '        if (File.Exists(marioPath))',
+  '        {',
+  '            var json = File.ReadAllText(marioPath, new UTF8Encoding(false));',
+  '            _mario = KernelWorld.LoadMarioJson(json);',
+  '        }',
+  '    }',
+  '',
+  '    public int GetCoins() => _mario?.Inventory.GetCount("coin") ?? 0;',
+  '    public int GetCoinTarget() => _mario?.Objectives.CoinTarget ?? 0;',
+  '',
+  '    public void Move(float dx, float dy){ X += dx; Y += dy; }',
+  '',
+  '    public void Tick()',
+  '    {',
+  '        if (ActiveMode == Mode.Yume)',
+  '        {',
+  '            if (_warp == null) { Last = ""; return; }',
+  '            var r = _warp.TryWarp(new WarpKernel.WarpRequest(SceneId, X, Y));',
+  '            if (r.Warped)',
+  '            {',
+  '                SceneId = r.NewSceneId; X = r.SpawnX; Y = r.SpawnY;',
+  '                Last = r.MatchedWarpId;',
+  '                return;',
+  '            }',
+  '            Last = "";',
+  '        }',
+  '        else',
+  '        {',
+  '            if (_mario == null) { Last = ""; return; }',
+  '            var p = new KernelWorld.PlayerState(SceneId, X, Y);',
+  '            var r = _mario.Tick(p);',
+  '            SceneId = r.Player.SceneId; X = r.Player.X; Y = r.Player.Y;',
+  '            Last = r.MatchedTriggerId ?? "";',
+  '        }',
+  '    }',
+  '}'
+)
+$bridgeText = (@($bridge) -join "`n") + "`n"
+Write-Utf8NoBomLf $BridgePath $bridgeText
+Write-Host ("WROTE: " + $BridgePath) -ForegroundColor Green
+
+$OverlayPath = Join-Path $EngineDir "KernelOverlayComponent.cs"
+Backup-IfExists $OverlayPath
+$overlay = @(
+  'using Microsoft.Xna.Framework;',
+  'using Microsoft.Xna.Framework.Graphics;',
+  'using Microsoft.Xna.Framework.Input;',
+  'using XnaGame = Microsoft.Xna.Framework.Game;',
+  '',
+  'namespace CDE.Runtime.Engine;',
+  '',
+  'internal sealed class KernelOverlayComponent : DrawableGameComponent',
+  '{',
+  '    private readonly GameplayBridge _bridge;',
+  '    private SpriteBatch? _sb;',
+  '    private Texture2D? _px;',
+  '    private KeyboardState _prev;',
+  '',
+  '    public KernelOverlayComponent(XnaGame game, GameplayBridge bridge) : base(game){ _bridge = bridge; }',
+  '',
+  '    protected override void LoadContent()',
+  '    {',
+  '        _sb = new SpriteBatch(GraphicsDevice);',
+  '        _px = new Texture2D(GraphicsDevice, 1, 1);',
+  '        _px.SetData(new[] { Color.White });',
+  '        base.LoadContent();',
+  '    }',
+  '',
+  '    public override void Update(GameTime gameTime)',
+  '    {',
+  '        var k = Keyboard.GetState();',
+  '        float s = 0.10f;',
+  '',
+  '        if (k.IsKeyDown(Keys.Left)  || k.IsKeyDown(Keys.A)) _bridge.Move(-s, 0);',
+  '        if (k.IsKeyDown(Keys.Right) || k.IsKeyDown(Keys.D)) _bridge.Move( s, 0);',
+  '        if (k.IsKeyDown(Keys.Up)    || k.IsKeyDown(Keys.W)) _bridge.Move(0, -s);',
+  '        if (k.IsKeyDown(Keys.Down)  || k.IsKeyDown(Keys.S)) _bridge.Move(0,  s);',
+  '',
+  '        if (k.IsKeyDown(Keys.F1) && !_prev.IsKeyDown(Keys.F1)) _bridge.SetMode(GameplayBridge.Mode.Yume);',
+  '        if (k.IsKeyDown(Keys.F2) && !_prev.IsKeyDown(Keys.F2)) _bridge.SetMode(GameplayBridge.Mode.Mario);',
+  '',
+  '        _bridge.Tick();',
+  '        _prev = k;',
+  '',
+  '        var coins = _bridge.GetCoins();',
+  '        var tgt = _bridge.GetCoinTarget();',
+  '        var key = _bridge.Flags.GetBool("has_dream_key") ? "1" : "0";',
+  '        var last = string.IsNullOrWhiteSpace(_bridge.Last) ? "-" : _bridge.Last;',
+  '',
+  '        Game.Window.Title =',
+  '            "CDE KERNEL GUI v3b | mode=" + _bridge.ActiveMode +',
+  '            " scene=" + _bridge.SceneId +',
+  '            " pos=(" + _bridge.X.ToString("0.00") + "," + _bridge.Y.ToString("0.00") + ")" +',
+  '            " coins=" + coins + "/" + tgt +',
+  '            " key=" + key +',
+  '            " last=" + last;',
+  '',
+  '        base.Update(gameTime);',
+  '    }',
+  '',
+  '    public override void Draw(GameTime gameTime)',
+  '    {',
+  '        if (_sb == null || _px == null){ base.Draw(gameTime); return; }',
+  '        _sb.Begin(samplerState: SamplerState.PointClamp);',
+  '        int sx = 20 + (int)(_bridge.X * 12f);',
+  '        int sy = 60 + (int)(_bridge.Y * 12f);',
+  '        var r = new Rectangle(sx, sy, 18, 18);',
+  '        _sb.Draw(_px, r, Color.LimeGreen);',
+  '        _sb.End();',
+  '        base.Draw(gameTime);',
+  '    }',
+  '}'
+)
+$overlayText = (@($overlay) -join "`n") + "`n"
+Write-Utf8NoBomLf $OverlayPath $overlayText
+Write-Host ("WROTE: " + $OverlayPath) -ForegroundColor Green
+
+# --- Patch host (NO static Regex.Replace overload traps) ---
+$HostText = ReadAllTextUtf8 $HostPath
+if($HostText -match "CDE_KERNEL_OVERLAY_V3B"){ Write-Host ("SKIP: host already patched: " + $HostPath) -ForegroundColor Yellow } else {
+  Backup-IfExists $HostPath
+  $t = $HostText.Replace("`r`n","`n")
+  if($t -notmatch "using\s+System\.IO\s*;"){
+    if($t -match "using\s+System\s*;"){ $t = [System.Text.RegularExpressions.Regex]::Replace($t,"using\s+System\s*;","using System;`nusing System.IO;") }
+    else { $t = ("using System.IO;`n" + $t) }
+  }
+  if($t -notmatch "using\s+System\s*;"){ $t = ("using System;`n" + $t) }
+  if($t -notmatch "using\s+System\.IO\s*;"){ $t = ("using System.IO;`n" + $t) }
+
+  $rxClass = New-Object System.Text.RegularExpressions.Regex("(class\s+\w+.*?\{)", ([System.Text.RegularExpressions.RegexOptions]::Singleline))
+  $t2 = $rxClass.Replace($t, ($matches[0]), 1)
+  # PowerShell $matches is not reliable here; do replacement via Match object instead
+  $m = $rxClass.Match($t)
+  if(-not $m.Success){ Die ("CANNOT_PATCH_CLASS_OPEN: " + $HostPath) }
+  $insert = $m.Value + "`n    // CDE_KERNEL_OVERLAY_V3B`n    private GameplayBridge? _kernel;`n    private KernelOverlayComponent? _kernelOverlay;"
+  $t = $t.Substring(0,$m.Index) + $insert + $t.Substring($m.Index + $m.Length)
+
+  $helper = @(
+    '    private static string FindRepoRoot(string start)',
+    '    {',
+    '        var d = new DirectoryInfo(start);',
+    '        for (int i = 0; i < 12 && d != null; i++)',
+    '        {',
+    '            var sln = Path.Combine(d.FullName, "CDE.sln");',
+    '            if (File.Exists(sln)) return d.FullName;',
+    '            d = d.Parent;',
+    '        }',
+    '        return Directory.GetCurrentDirectory();',
+    '    }',
+    '',
+    '    private void EnsureKernelOverlay()',
+    '    {',
+    '        if (_kernelOverlay != null) return;',
+    '        var root = FindRepoRoot(AppContext.BaseDirectory);',
+    '        _kernel = new GameplayBridge();',
+    '        _kernel.LoadFromRepoRoot(root);',
+    '        _kernelOverlay = new KernelOverlayComponent(this, _kernel);',
+    '        Components.Add(_kernelOverlay);',
+    '    }'
+  )
+  $helperText = (@($helper) -join "`n")
+  $t = [System.Text.RegularExpressions.Regex]::Replace($t,"\}\s*$",("`n" + $helperText + "`n}`n"))
+
+  if($t -match "override\s+void\s+Initialize\s*\("){
+    $t = [System.Text.RegularExpressions.Regex]::Replace($t,"(override\s+void\s+Initialize\s*\(\s*\)\s*\{)",("`$1`n        EnsureKernelOverlay();"),1)
+  } elseif($t -match "override\s+void\s+LoadContent\s*\("){
+    $t = [System.Text.RegularExpressions.Regex]::Replace($t,"(override\s+void\s+LoadContent\s*\(\s*\)\s*\{)",("`$1`n        EnsureKernelOverlay();"),1)
+  } else { Die ("HOST_HAS_NO_INITIALIZE_OR_LOADCONTENT: " + $HostPath) }
+
+  Write-Utf8NoBomLf $HostPath ($t + "`n")
+  Write-Host ("PATCH_OK: wired overlay into host: " + $HostPath) -ForegroundColor Green
+}
+
+Write-Host ("NOW_BUILD: dotnet build .\CDE.sln -c Debug") -ForegroundColor Yellow

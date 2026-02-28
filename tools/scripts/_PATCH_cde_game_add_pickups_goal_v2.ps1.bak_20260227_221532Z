@@ -1,0 +1,170 @@
+param([Parameter(Mandatory=$true)][string]$RepoRoot)
+
+$ErrorActionPreference="Stop"
+Set-StrictMode -Version Latest
+function Die([string]$m){ throw $m }
+
+function Ensure-Dir([string]$p){
+  if([string]::IsNullOrWhiteSpace($p)){ Die "Ensure-Dir: empty" }
+  if(-not (Test-Path -LiteralPath $p -PathType Container)){ New-Item -ItemType Directory -Force -Path $p | Out-Null }
+}
+function WriteUtf8NoBomLf([string]$path,[string]$text){
+  $dir = Split-Path -Parent $path
+  if(-not [string]::IsNullOrWhiteSpace($dir)){ Ensure-Dir $dir }
+  $u = New-Object System.Text.UTF8Encoding($false)
+  $bytes = $u.GetBytes($text.Replace("`r`n","`n"))
+  [System.IO.File]::WriteAllBytes($path,$bytes)
+}
+function ReadAllTextUtf8([string]$p){ return [System.IO.File]::ReadAllText($p,[System.Text.Encoding]::UTF8) }
+function Backup-IfExists([string]$p){
+  if(Test-Path -LiteralPath $p -PathType Leaf){
+    $ts=[DateTime]::UtcNow.ToString("yyyyMMdd_HHmmssZ")
+    $bak=($p + ".bak_" + $ts)
+    Copy-Item -LiteralPath $p -Destination $bak -Force
+    Write-Host ("BACKUP: " + $bak) -ForegroundColor Yellow
+  }
+}
+
+$RepoRootAbs = (Resolve-Path -LiteralPath $RepoRoot).Path
+$GameRoot = Join-Path $RepoRootAbs "src\CDE.Game\GameRoot.cs"
+if(-not (Test-Path -LiteralPath $GameRoot -PathType Leaf)){ Die ("MISSING_GAMEROOT: " + $GameRoot) }
+
+Backup-IfExists $GameRoot
+$t = ReadAllTextUtf8 $GameRoot
+$t = $t.Replace("`r`n","`n")
+
+# ---- 1) Inject declarations inside class GameRoot ----
+if($t -notmatch "CDE_GAME_PICKUPS_V2"){
+  $classOpen = "(?m)^\s*public\s+class\s+GameRoot\s*:\s*Game\s*\{"
+  $m = [System.Text.RegularExpressions.Regex]::Match($t, $classOpen)
+  if(-not $m.Success){ Die ("ANCHOR_CLASS_GAMEROOT_NOT_FOUND: " + $GameRoot) }
+
+  $decl = @()
+  $decl += $m.Value
+  $decl += ""
+  $decl += "    // CDE_GAME_PICKUPS_V2"
+  $decl += "    private enum PickupKind { Coin, Cherry }"
+  $decl += "    private struct Pickup { public PickupKind Kind; public Rectangle Rect; public bool Taken; }"
+  $decl += "    private System.Collections.Generic.List<Pickup> _pickups = new System.Collections.Generic.List<Pickup>();"
+  $decl += "    private int _coins = 0;"
+  $decl += "    private int _cherries = 0;"
+  $decl += "    private Rectangle _goalRect = new Rectangle(0,0,16,16);"
+  $decl += "    private bool _goalReached = false;"
+  $decl += ""
+  $rep = (@($decl) -join "`n")
+
+  $t2 = [System.Text.RegularExpressions.Regex]::Replace(
+    $t, $classOpen,
+    [System.Text.RegularExpressions.MatchEvaluator]{ param($mm) $rep },
+    1
+  )
+  if($t2 -eq $t){ Die ("FAILED_INSERT_PICKUPS_DECLS: " + $GameRoot) }
+  $t = $t2
+}
+
+# ---- 2) Init pickups in LoadContent right after method open brace ----
+if($t -notmatch "CDE_GAME_PICKUPS_INIT_V2"){
+  $loadOpen = "(?m)^\s*protected\s+override\s+void\s+LoadContent\s*\(\s*\)\s*\{"
+  $m = [System.Text.RegularExpressions.Regex]::Match($t, $loadOpen)
+  if(-not $m.Success){ Die ("ANCHOR_LOADCONTENT_NOT_FOUND: " + $GameRoot) }
+
+  $ins = @()
+  $ins += $m.Value
+  $ins += "        // CDE_GAME_PICKUPS_INIT_V2"
+  $ins += "        _pickups.Clear();"
+  $ins += "        _coins = 0; _cherries = 0; _goalReached = false;"
+  $ins += "        // place pickups in world pixel-space (tile=16px); simple demo layout"
+  $ins += "        _pickups.Add(new Pickup { Kind = PickupKind.Coin,   Rect = new Rectangle( 2*16+4, 12*16+4, 8, 8), Taken = false });"
+  $ins += "        _pickups.Add(new Pickup { Kind = PickupKind.Coin,   Rect = new Rectangle( 6*16+4, 12*16+4, 8, 8), Taken = false });"
+  $ins += "        _pickups.Add(new Pickup { Kind = PickupKind.Coin,   Rect = new Rectangle(10*16+4, 12*16+4, 8, 8), Taken = false });"
+  $ins += "        _pickups.Add(new Pickup { Kind = PickupKind.Cherry, Rect = new Rectangle(14*16+4,  9*16+4, 8, 8), Taken = false });"
+  $ins += "        _pickups.Add(new Pickup { Kind = PickupKind.Cherry, Rect = new Rectangle(24*16+4,  6*16+4, 8, 8), Taken = false });"
+  $ins += "        _goalRect = new Rectangle(30*16, 12*16, 16, 16);"
+  $ins += ""
+  $rep = (@($ins) -join "`n")
+
+  $t2 = [System.Text.RegularExpressions.Regex]::Replace(
+    $t, $loadOpen,
+    [System.Text.RegularExpressions.MatchEvaluator]{ param($mm) $rep },
+    1
+  )
+  if($t2 -eq $t){ Die ("FAILED_INSERT_PICKUPS_INIT: " + $GameRoot) }
+  $t = $t2
+}
+
+# ---- 3) Update pickups after camera follow ----
+if($t -notmatch "CDE_GAME_PICKUPS_UPDATE_V2"){
+  $camFollow = "(?m)^\s*_cam\.Follow\s*\(.*\)\s*;\s*$"
+  $m = [System.Text.RegularExpressions.Regex]::Match($t, $camFollow)
+  if(-not $m.Success){ Die ("ANCHOR_CAM_FOLLOW_NOT_FOUND: " + $GameRoot) }
+
+  $blk = @()
+  $blk += $m.Value
+  $blk += ""
+  $blk += "        // CDE_GAME_PICKUPS_UPDATE_V2"
+  $blk += "        var pr = new Rectangle((int)_ctrl.X, (int)_ctrl.Y, (int)_ctrl.W, (int)_ctrl.H);"
+  $blk += "        for (int i = 0; i < _pickups.Count; i++)"
+  $blk += "        {"
+  $blk += "            var p = _pickups[i];"
+  $blk += "            if (p.Taken) continue;"
+  $blk += "            if (pr.Intersects(p.Rect))"
+  $blk += "            {"
+  $blk += "                p.Taken = true;"
+  $blk += "                if (p.Kind == PickupKind.Coin) _coins++; else _cherries++;"
+  $blk += "                _pickups[i] = p;"
+  $blk += "            }"
+  $blk += "        }"
+  $blk += "        if (!_goalReached && _coins >= 3 && pr.Intersects(_goalRect))"
+  $blk += "        {"
+  $blk += "            _goalReached = true;"
+  $blk += "        }"
+  $blk += "        Window.Title = \"CDE.Game coins=\" + _coins + \"/3 cherries=\" + _cherries + \" goal=\" + (_goalReached ? 1 : 0);"
+  $blk += ""
+  $rep = (@($blk) -join "`n")
+
+  $t2 = [System.Text.RegularExpressions.Regex]::Replace(
+    $t, $camFollow,
+    [System.Text.RegularExpressions.MatchEvaluator]{ param($mm) $rep },
+    1
+  )
+  if($t2 -eq $t){ Die ("FAILED_INSERT_PICKUPS_UPDATE: " + $GameRoot) }
+  $t = $t2
+}
+
+# ---- 4) Draw pickups/goal right before _sb.End() ----
+if($t -notmatch "CDE_GAME_PICKUPS_DRAW_V2"){
+  $endPat = "(?m)^\s*_sb\.End\s*\(\s*\)\s*;\s*$"
+  $m = [System.Text.RegularExpressions.Regex]::Match($t, $endPat)
+  if(-not $m.Success){ Die ("ANCHOR_SB_END_NOT_FOUND: " + $GameRoot) }
+
+  $draw = @()
+  $draw += "        // CDE_GAME_PICKUPS_DRAW_V2"
+  $draw += "        for (int i = 0; i < _pickups.Count; i++)"
+  $draw += "        {"
+  $draw += "            var p = _pickups[i];"
+  $draw += "            if (p.Taken) continue;"
+  $draw += "            var c = (p.Kind == PickupKind.Coin) ? new Color(240, 220, 40) : new Color(220, 60, 80);"
+  $draw += "            _sb.Draw(_px, p.Rect, c);"
+  $draw += "        }"
+  $draw += "        var goalC = _goalReached ? new Color(80, 200, 120) : new Color(40, 120, 80);"
+  $draw += "        _sb.Draw(_px, _goalRect, goalC);"
+  $draw += "        if (_font != null)"
+  $draw += "        {"
+  $draw += "            _sb.DrawString(_font, \"coins \" + _coins + \"/3  cherries \" + _cherries + \"  goal \" + (_goalReached ? \"OK\" : \"LOCK\"), new Vector2(8, 8), Color.White);"
+  $draw += "        }"
+  $draw += ""
+  $rep = (@($draw) -join "`n") + "`n" + $m.Value
+
+  $t2 = [System.Text.RegularExpressions.Regex]::Replace(
+    $t, $endPat,
+    [System.Text.RegularExpressions.MatchEvaluator]{ param($mm) $rep },
+    1
+  )
+  if($t2 -eq $t){ Die ("FAILED_INSERT_PICKUPS_DRAW: " + $GameRoot) }
+  $t = $t2
+}
+
+WriteUtf8NoBomLf $GameRoot ($t + "`n")
+Write-Host ("PATCH_OK: added pickups+goal to CDE.Game (v2): " + $GameRoot) -ForegroundColor Green
+Write-Host "NEXT: dotnet build .\CDE.sln -c Debug" -ForegroundColor Yellow
+Write-Host "NEXT: dotnet run --project .\src\CDE.Game\CDE.Game.csproj -c Debug" -ForegroundColor Yellow

@@ -1,0 +1,210 @@
+param([Parameter(Mandatory=$true)][string]$RepoRoot)
+
+$ErrorActionPreference="Stop"
+Set-StrictMode -Version Latest
+
+function Die([string]$m){ throw $m }
+function Ensure-Dir([string]$p){
+  if([string]::IsNullOrWhiteSpace($p)){ Die "Ensure-Dir: empty" }
+  if(-not (Test-Path -LiteralPath $p -PathType Container)){ New-Item -ItemType Directory -Force -Path $p | Out-Null }
+}
+function Write-Utf8NoBomLf([string]$path,[string]$text){
+  $dir = Split-Path -Parent $path
+  if(-not [string]::IsNullOrWhiteSpace($dir)){ Ensure-Dir $dir }
+  $u = New-Object System.Text.UTF8Encoding($false)
+  $bytes = $u.GetBytes($text.Replace("`r`n","`n"))
+  [System.IO.File]::WriteAllBytes($path,$bytes)
+}
+function Backup-IfExists([string]$p){
+  if(Test-Path -LiteralPath $p -PathType Leaf){
+    $ts=[DateTime]::UtcNow.ToString("yyyyMMdd_HHmmssZ")
+    $bak=($p + ".bak_" + $ts)
+    Copy-Item -LiteralPath $p -Destination $bak -Force
+    Write-Host ("BACKUP: " + $bak) -ForegroundColor Yellow
+  }
+}
+
+$RepoRootAbs = (Resolve-Path -LiteralPath $RepoRoot).Path
+$Sln = Join-Path $RepoRootAbs "CDE.sln"
+if(-not (Test-Path -LiteralPath $Sln -PathType Leaf)){ Die ("MISSING_SOLUTION: " + $Sln) }
+$GameProj = Join-Path $RepoRootAbs "src\CDE.Game\CDE.Game.csproj"
+if(-not (Test-Path -LiteralPath $GameProj -PathType Leaf)){ Die ("MISSING_GAME_PROJECT: " + $GameProj) }
+
+$csprojText = [System.IO.File]::ReadAllText($GameProj,[System.Text.Encoding]::UTF8)
+if($csprojText -notmatch "CDE\.Gameplay\.csproj"){
+  Backup-IfExists $GameProj
+  $ins = '  <ItemGroup>' + "`n" + '    <ProjectReference Include="..\CDE.Gameplay\CDE.Gameplay.csproj" />' + "`n" + '  </ItemGroup>'
+  $new = [System.Text.RegularExpressions.Regex]::Replace($csprojText,"</Project>\s*$",($ins + "`n</Project>`n"))
+  Write-Utf8NoBomLf $GameProj $new
+  Write-Host ("PATCH_OK: added ProjectReference to CDE.Gameplay: " + $GameProj) -ForegroundColor Green
+} else {
+  Write-Host ("OK: Game already references Gameplay: " + $GameProj) -ForegroundColor Green
+}
+
+$BridgePath = Join-Path $RepoRootAbs "src\CDE.Game\GameplayBridge.cs"
+Backup-IfExists $BridgePath
+$bridge = @(
+  'using System.IO;',
+  'using System.Text;',
+  'using CDE.Gameplay.Kernel;',
+  '',
+  'namespace CDE.Game;',
+  '',
+  'internal sealed class GameplayBridge',
+  '{',
+  '    public enum Mode { Yume, Mario }',
+  '    public Mode ActiveMode { get; private set; } = Mode.Yume;',
+  '',
+  '    public string SceneId { get; private set; } = "StartRoom";',
+  '    public float X { get; private set; } = 1f;',
+  '    public float Y { get; private set; } = 1f;',
+  '',
+  '    public readonly FlagStore Flags = new();',
+  '    private WarpKernel? _warp;',
+  '    private KernelWorld? _mario;',
+  '    public string Last { get; private set; } = "";',
+  '',
+  '    public void SetMode(Mode m)',
+  '    {',
+  '        ActiveMode = m;',
+  '        if (m == Mode.Yume) { SceneId = "StartRoom"; X = 1f; Y = 1f; }',
+  '        else { SceneId = "MarioRoom"; X = 0f; Y = 0f; }',
+  '        Last = "";',
+  '    }',
+  '',
+  '    public void LoadFromRepoRoot(string repoRoot)',
+  '    {',
+  '        var yumePath = Path.Combine(repoRoot, "assets_src", "gameplay", "warp_graph.v1.json");',
+  '        var marioPath = Path.Combine(repoRoot, "assets_src", "gameplay", "mario_graph.v1.json");',
+  '',
+  '        if (File.Exists(yumePath))',
+  '        {',
+  '            var json = File.ReadAllText(yumePath, new UTF8Encoding(false));',
+  '            var g = WarpKernel.LoadWarpGraphJson(json);',
+  '            _warp = new WarpKernel(g, Flags);',
+  '        }',
+  '',
+  '        if (File.Exists(marioPath))',
+  '        {',
+  '            var json = File.ReadAllText(marioPath, new UTF8Encoding(false));',
+  '            _mario = KernelWorld.LoadMarioJson(json);',
+  '        }',
+  '    }',
+  '',
+  '    public int GetCoins() => _mario?.Inventory.GetCount("coin") ?? 0;',
+  '    public int GetCoinTarget() => _mario?.Objectives.CoinTarget ?? 0;',
+  '',
+  '    public void Move(float dx, float dy){ X += dx; Y += dy; }',
+  '',
+  '    public void Tick()',
+  '    {',
+  '        if (ActiveMode == Mode.Yume)',
+  '        {',
+  '            if (_warp == null) { Last = ""; return; }',
+  '            var r = _warp.TryWarp(new WarpKernel.WarpRequest(SceneId, X, Y));',
+  '            if (r.Warped)',
+  '            {',
+  '                SceneId = r.NewSceneId; X = r.SpawnX; Y = r.SpawnY;',
+  '                Last = r.MatchedWarpId;',
+  '                return;',
+  '            }',
+  '            Last = "";',
+  '        }',
+  '        else',
+  '        {',
+  '            if (_mario == null) { Last = ""; return; }',
+  '            var p = new KernelWorld.PlayerState(SceneId, X, Y);',
+  '            var r = _mario.Tick(p);',
+  '            SceneId = r.Player.SceneId; X = r.Player.X; Y = r.Player.Y;',
+  '            Last = r.MatchedTriggerId ?? "";',
+  '        }',
+  '    }',
+  '}'
+)
+$bridgeText = (@($bridge) -join "`n") + "`n"
+Write-Utf8NoBomLf $BridgePath $bridgeText
+Write-Host ("WROTE: " + $BridgePath) -ForegroundColor Green
+
+$OverlayPath = Join-Path $RepoRootAbs "src\CDE.Game\KernelOverlayComponent.cs"
+Backup-IfExists $OverlayPath
+$overlay = @(
+  'using Microsoft.Xna.Framework;',
+  'using Microsoft.Xna.Framework.Graphics;',
+  'using Microsoft.Xna.Framework.Input;',
+  'using XnaGame = Microsoft.Xna.Framework.Game;',
+  '',
+  'namespace CDE.Game;',
+  '',
+  'internal sealed class KernelOverlayComponent : DrawableGameComponent',
+  '{',
+  '    private readonly GameplayBridge _bridge;',
+  '    private SpriteBatch? _sb;',
+  '    private Texture2D? _px;',
+  '    private KeyboardState _prev;',
+  '',
+  '    public KernelOverlayComponent(XnaGame game, GameplayBridge bridge) : base(game){ _bridge = bridge; }',
+  '',
+  '    protected override void LoadContent()',
+  '    {',
+  '        _sb = new SpriteBatch(GraphicsDevice);',
+  '        _px = new Texture2D(GraphicsDevice, 1, 1);',
+  '        _px.SetData(new[] { Color.White });',
+  '        base.LoadContent();',
+  '    }',
+  '',
+  '    public override void Update(GameTime gameTime)',
+  '    {',
+  '        var k = Keyboard.GetState();',
+  '        float s = 0.10f;',
+  '',
+  '        if (k.IsKeyDown(Keys.Left)  || k.IsKeyDown(Keys.A)) _bridge.Move(-s, 0);',
+  '        if (k.IsKeyDown(Keys.Right) || k.IsKeyDown(Keys.D)) _bridge.Move( s, 0);',
+  '        if (k.IsKeyDown(Keys.Up)    || k.IsKeyDown(Keys.W)) _bridge.Move(0, -s);',
+  '        if (k.IsKeyDown(Keys.Down)  || k.IsKeyDown(Keys.S)) _bridge.Move(0,  s);',
+  '',
+  '        if (k.IsKeyDown(Keys.F1) && !_prev.IsKeyDown(Keys.F1)) _bridge.SetMode(GameplayBridge.Mode.Yume);',
+  '        if (k.IsKeyDown(Keys.F2) && !_prev.IsKeyDown(Keys.F2)) _bridge.SetMode(GameplayBridge.Mode.Mario);',
+  '',
+  '        _bridge.Tick();',
+  '        _prev = k;',
+  '',
+  '        var coins = _bridge.GetCoins();',
+  '        var tgt = _bridge.GetCoinTarget();',
+  '        var key = _bridge.Flags.GetBool("has_dream_key") ? "1" : "0";',
+  '        var last = string.IsNullOrWhiteSpace(_bridge.Last) ? "-" : _bridge.Last;',
+  '',
+  '        Game.Window.Title =',
+  '            "CDE KERNEL GUI v3b | mode=" + _bridge.ActiveMode +',
+  '            " scene=" + _bridge.SceneId +',
+  '            " pos=(" + _bridge.X.ToString("0.00") + "," + _bridge.Y.ToString("0.00") + ")" +',
+  '            " coins=" + coins + "/" + tgt +',
+  '            " key=" + key +',
+  '            " last=" + last;',
+  '',
+  '        base.Update(gameTime);',
+  '    }',
+  '',
+  '    public override void Draw(GameTime gameTime)',
+  '    {',
+  '        if (_sb == null || _px == null){ base.Draw(gameTime); return; }',
+  '',
+  '        _sb.Begin(samplerState: SamplerState.PointClamp);',
+  '',
+  '        int sx = 20 + (int)(_bridge.X * 12f);',
+  '        int sy = 60 + (int)(_bridge.Y * 12f);',
+  '        var r = new Rectangle(sx, sy, 18, 18);',
+  '        _sb.Draw(_px, r, Color.LimeGreen);',
+  '',
+  '        _sb.End();',
+  '        base.Draw(gameTime);',
+  '    }',
+  '}'
+)
+$overlayText = (@($overlay) -join "`n") + "`n"
+Write-Utf8NoBomLf $OverlayPath $overlayText
+Write-Host ("WROTE: " + $OverlayPath) -ForegroundColor Green
+
+& dotnet build $Sln -c Debug | Out-Host
+if($LASTEXITCODE -ne 0){ Die "DOTNET_BUILD_FAILED_AFTER_SAFEWRITER_REPAIR_V2" }
+Write-Host "CDE_SAFEWRITER_REPAIR_V2_BUILD_OK" -ForegroundColor Green
+Write-Host "RUN: dotnet run --project .\src\CDE.Game\CDE.Game.csproj -c Debug" -ForegroundColor Yellow

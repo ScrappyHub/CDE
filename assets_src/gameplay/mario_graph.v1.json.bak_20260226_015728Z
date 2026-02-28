@@ -1,0 +1,8 @@
+{
+  "coinTarget": 3,
+  "triggers": [
+    { "type": "pickup", "id": "coin_a", "sceneId": "MarioRoom", "zone": { "x": 2, "y": 2, "w": 2, "h": 2 }, "oneShot": true, "firedFlag": "picked_coin_a", "itemId": "coin", "amount": 1 },
+    { "type": "pickup", "id": "coin_b", "sceneId": "MarioRoom", "zone": { "x": 6, "y": 2, "w": 2, "h": 2 }, "oneShot": true, "firedFlag": "picked_coin_b", "itemId": "coin", "amount": 1 },
+    { "type": "pickup", "id": "coin_c", "sceneId": "MarioRoom", "zone": { "x": 10, "y": 2, "w": 2, "h": 2 }, "oneShot": true, "firedFlag": "picked_coin_c", "itemId": "coin", "amount": 1 },
+  ]
+}

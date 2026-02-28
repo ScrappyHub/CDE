@@ -1,0 +1,153 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+namespace CDE.Gameplay.Kernel;
+
+public sealed class KernelWorld
+{
+    public sealed record PlayerState(string SceneId, float X, float Y);
+    public sealed record TickResult(bool Warped, PlayerState Player, string MatchedTriggerId);
+
+    public List<Trigger> Triggers { get; init; } = new();
+    public Inventory Inventory { get; } = new();
+    public Objectives Objectives { get; } = new();
+    public FlagStore Flags { get; } = new();
+
+    public TickResult Tick(PlayerState p)
+    {
+        // Stable ordering: by Id ordinal to guarantee determinism across content load order
+        var ordered = Triggers.OrderBy(t => t.Id, StringComparer.Ordinal).ToList();
+        foreach (var t in ordered)
+        {
+            if (!string.Equals(t.SceneId, p.SceneId, StringComparison.Ordinal)) continue;
+            if (!t.Zone.Contains(p.X, p.Y)) continue;
+            if (!t.IsActive(Flags)) continue;
+
+            if (t is PickupTrigger pt)
+            {
+                Inventory.Add(pt.ItemId, pt.Amount);
+                if (!string.IsNullOrWhiteSpace(pt.FiredFlag)) Flags.SetBool(pt.FiredFlag, true);
+                return new TickResult(false, p, t.Id);
+            }
+            else if (t is ExitTrigger et)
+            {
+                if (!string.IsNullOrWhiteSpace(et.RequireFlag) && !Flags.GetBool(et.RequireFlag))
+                    return new TickResult(false, p, "EXIT_LOCKED_FLAG:" + t.Id);
+                if (et.RequireCoins > 0 && Inventory.GetCount("coin") < et.RequireCoins)
+                    return new TickResult(false, p, "EXIT_LOCKED_COINS:" + t.Id);
+
+                if (!string.IsNullOrWhiteSpace(et.FiredFlag)) Flags.SetBool(et.FiredFlag, true);
+                var np = new PlayerState(et.ToScene, et.SpawnX, et.SpawnY);
+                return new TickResult(true, np, t.Id);
+            }
+        }
+        return new TickResult(false, p, "");
+    }
+
+    public static KernelWorld LoadMarioJson(string json)
+    {
+        var opt = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            ReadCommentHandling = JsonCommentHandling.Skip,
+            AllowTrailingCommas = true
+        };
+        opt.Converters.Add(new RectFConverter());
+        opt.Converters.Add(new TriggerConverter());
+        var root = JsonSerializer.Deserialize<MarioRoot>(json, opt) ?? new MarioRoot();
+        var w = new KernelWorld();
+        w.Objectives.CoinTarget = root.CoinTarget;
+        foreach (var t in root.Triggers) w.Triggers.Add(t);
+        return w;
+    }
+
+    private sealed class MarioRoot
+    {
+        public int CoinTarget { get; set; } = 0;
+        public List<Trigger> Triggers { get; set; } = new();
+    }
+
+    private sealed class RectFConverter : JsonConverter<RectF>
+    {
+        public override RectF Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType != JsonTokenType.StartObject) throw new JsonException();
+            float x = 0, y = 0, w = 0, h = 0;
+            while (reader.Read())
+            {
+                if (reader.TokenType == JsonTokenType.EndObject) break;
+                if (reader.TokenType != JsonTokenType.PropertyName) throw new JsonException();
+                var name = reader.GetString() ?? "";
+                reader.Read();
+                var v = reader.TokenType == JsonTokenType.Number ? reader.GetSingle() : 0f;
+                if (string.Equals(name, "x", StringComparison.OrdinalIgnoreCase)) x = v;
+                else if (string.Equals(name, "y", StringComparison.OrdinalIgnoreCase)) y = v;
+                else if (string.Equals(name, "w", StringComparison.OrdinalIgnoreCase)) w = v;
+                else if (string.Equals(name, "h", StringComparison.OrdinalIgnoreCase)) h = v;
+            }
+            return new RectF(x, y, w, h);
+        }
+
+        public override void Write(Utf8JsonWriter writer, RectF value, JsonSerializerOptions options)
+        {
+            writer.WriteStartObject();
+            writer.WriteNumber("x", value.X);
+            writer.WriteNumber("y", value.Y);
+            writer.WriteNumber("w", value.W);
+            writer.WriteNumber("h", value.H);
+            writer.WriteEndObject();
+        }
+    }
+
+    private sealed class TriggerConverter : JsonConverter<Trigger>
+    {
+        public override Trigger Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            using var doc = JsonDocument.ParseValue(ref reader);
+            var root = doc.RootElement;
+            var type = root.TryGetProperty("type", out var te) ? (te.GetString() ?? "") : "";
+            Trigger t = type switch
+            {
+                "pickup" => new PickupTrigger(),
+                "exit" => new ExitTrigger(),
+                _ => new PickupTrigger()
+            };
+
+            // common
+            t = ApplyCommon(t, root);
+
+            if (t is PickupTrigger pt)
+            {
+                if (root.TryGetProperty("itemId", out var ie)) pt = pt with { ItemId = ie.GetString() ?? "coin" };
+                if (root.TryGetProperty("amount", out var ae) && ae.ValueKind == JsonValueKind.Number) pt = pt with { Amount = ae.GetInt32() };
+                return pt;
+            }
+            if (t is ExitTrigger et)
+            {
+                if (root.TryGetProperty("toScene", out var se)) et = et with { ToScene = se.GetString() ?? "" };
+                if (root.TryGetProperty("spawnX", out var sx) && sx.ValueKind == JsonValueKind.Number) et = et with { SpawnX = sx.GetSingle() };
+                if (root.TryGetProperty("spawnY", out var sy) && sy.ValueKind == JsonValueKind.Number) et = et with { SpawnY = sy.GetSingle() };
+                if (root.TryGetProperty("requireFlag", out var rf)) et = et with { RequireFlag = rf.GetString() ?? "" };
+                if (root.TryGetProperty("requireCoins", out var rc) && rc.ValueKind == JsonValueKind.Number) et = et with { RequireCoins = rc.GetInt32() };
+                return et;
+            }
+            return t;
+        }
+
+        private static Trigger ApplyCommon(Trigger t, JsonElement root)
+        {
+            RectF zone = new RectF(0,0,0,0);
+            if (root.TryGetProperty("zone", out var zE))
+            {
+                var zjson = zE.GetRawText();
+                zone = JsonSerializer.Deserialize<RectF>(zjson, new JsonSerializerOptions { Converters = { new RectFConverter() } });
+            }
+            // init-only props, so construct new instances to set them
+            if (t is PickupTrigger pt) return new PickupTrigger { Id = id, SceneId = scene, Zone = zone, OneShot = one, FiredFlag = fired, ItemId = pt.ItemId, Amount = pt.Amount };
+            if (t is ExitTrigger et) return new ExitTrigger { Id = id, SceneId = scene, Zone = zone, OneShot = one, FiredFlag = fired, ToScene = et.ToScene, SpawnX = et.SpawnX, SpawnY = et.SpawnY, RequireFlag = et.RequireFlag, RequireCoins = et.RequireCoins };
+            return t;
+        }
+
+        public override void Write(Utf8JsonWriter writer, Trigger value, JsonSerializerOptions options) => throw new NotSupportedException();
+    }
+}

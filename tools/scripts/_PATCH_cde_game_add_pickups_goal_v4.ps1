@@ -1,3 +1,6 @@
+param([Parameter(Mandatory=$true)][string]$RepoRoot)
+$ErrorActionPreference="Stop"
+Set-StrictMode -Version Latest
 $ErrorActionPreference="Stop"
 Set-StrictMode -Version Latest
 param([Parameter(Mandatory=$true)][string]$RepoRoot)

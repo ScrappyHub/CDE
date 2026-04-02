@@ -1,4 +1,20 @@
-using Microsoft.Xna.Framework;
+class GameRoot : CdeGame
+{
+    // CDE_GAME_PICKUPS_V5
+    private enum PickupKind { Coin, Cherry }
+    private struct Pickup
+    {
+        public PickupKind Kind;
+        public Rectangle Rect;
+        public bool Taken;
+    }
+    private readonly System.Collections.Generic.List<Pickup> _pickups = new();
+    private Rectangle _goalRect;
+    private int _coins = 0;
+    private int _cherries = 0;
+    private bool _goalReached = false;
+
+ork;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
 using CDE.Runtime.Engine;
@@ -42,6 +58,17 @@ public sealed class GameRoot : CdeGame
 
     protected override void LoadContent()
     {
+
+        // CDE_GAME_PICKUPS_INIT_V5
+        _pickups.Clear();
+        _coins = 0; _cherries = 0; _goalReached = false;
+        _pickups.Add(new Pickup { Kind = PickupKind.Coin,   Rect = new Rectangle( 80, 120, 10, 10), Taken = false });
+        _pickups.Add(new Pickup { Kind = PickupKind.Coin,   Rect = new Rectangle(160, 120, 10, 10), Taken = false });
+        _pickups.Add(new Pickup { Kind = PickupKind.Coin,   Rect = new Rectangle(240, 120, 10, 10), Taken = false });
+        _pickups.Add(new Pickup { Kind = PickupKind.Cherry, Rect = new Rectangle(200,  80, 10, 10), Taken = false });
+        _goalRect = new Rectangle(300, 112, 12, 24);
+
+
         _sb = new SpriteBatch(GraphicsDevice);
         _ppr = new PixelPerfectRenderer(GraphicsDevice, DefaultVirtual.w, DefaultVirtual.h);
         _cam = new PixelPerfectCamera2D { Origin = new Vector2(DefaultVirtual.w / 2f, DefaultVirtual.h / 2f) };
@@ -130,6 +157,26 @@ public sealed class GameRoot : CdeGame
 
         // camera follows player center
         _cam.Follow(new Vector2(_ctrl.X + (_ctrl.W / 2f), _ctrl.Y + (_ctrl.H / 2f)));
+
+        // CDE_GAME_PICKUPS_UPDATE_V5
+        var pr = new Rectangle((int)_ctrl.X, (int)_ctrl.Y, (int)_ctrl.W, (int)_ctrl.H);
+        for (int i = 0; i < _pickups.Count; i++)
+        {
+            var p = _pickups[i];
+            if (p.Taken) continue;
+            if (pr.Intersects(p.Rect))
+            {
+                p.Taken = true;
+                if (p.Kind == PickupKind.Coin) _coins++; else _cherries++;
+                _pickups[i] = p;
+            }
+        }
+        if (!_goalReached && _coins >= 3 && pr.Intersects(_goalRect))
+        {
+            _goalReached = true;
+        }
+        Window.Title = "CDE.Game coins=" + _coins + "/3 cherries=" + _cherries + " goal=" + (_goalReached ? 1 : 0);
+
             if (_dbg != null) _dbg.Update(gameTime);
         base.Update(gameTime);
     }
@@ -167,6 +214,21 @@ public sealed class GameRoot : CdeGame
 
         // Draw player (white rect)
         _sb.Draw(_px, new Rectangle((int)System.Math.Round(_ctrl.X), (int)System.Math.Round(_ctrl.Y), (int)_ctrl.W, (int)_ctrl.H), Color.White);
+        // CDE_GAME_PICKUPS_DRAW_V5
+        for (int i = 0; i < _pickups.Count; i++)
+        {
+            var p = _pickups[i];
+            if (p.Taken) continue;
+            var c = (p.Kind == PickupKind.Coin) ? new Color(240, 220, 40) : new Color(220, 60, 80);
+            _sb.Draw(_px, p.Rect, c);
+        }
+        var goalC = _goalReached ? new Color(80, 200, 120) : new Color(40, 120, 80);
+        _sb.Draw(_px, _goalRect, goalC);
+        if (_font != null)
+        {
+            _sb.DrawString(_font, "coins " + _coins + "/3  cherries " + _cherries + "  goal " + (_goalReached ? "OK" : "LOCK"), new Vector2(8, 8), Color.White);
+        }
+
 
         _sb.End();
 
@@ -174,7 +236,24 @@ public sealed class GameRoot : CdeGame
         {
             _sb.Begin(SpriteSortMode.Deferred, BlendState.AlphaBlend, SamplerState.PointClamp, DepthStencilState.None, RasterizerState.CullNone);
             _dbg.Draw(_sb, _font);
-            _sb.End();
+        // CDE_GAME_PICKUPS_DRAW_V5
+        for (int i = 0; i < _pickups.Count; i++)
+        {
+            var p = _pickups[i];
+            if (p.Taken) continue;
+            var c = (p.Kind == PickupKind.Coin) ? new Color(240, 220, 40) : new Color(220, 60, 80);
+            _sb.Draw(_px, p.Rect, c);
+        }
+        var goalC = _goalReached ? new Color(80, 200, 120) : new Color(40, 120, 80);
+        _sb.Draw(_px, _goalRect, goalC);
+        if (_font != null)
+        {
+            _sb.DrawString(_font, "coins " + _coins + "/3  cherries " + _cherries + "  goal " + (_goalReached ? "OK" : "LOCK"), new Vector2(8, 8), Color.White);
+        }
+
+
+        _sb.End();
+
         }
 
         _ppr.EndVirtualAndBlitToBackbuffer(_sb, clearColor: Color.Black);
@@ -182,6 +261,7 @@ public sealed class GameRoot : CdeGame
         base.Draw(gameTime);
     }
 }
+
 
 
 

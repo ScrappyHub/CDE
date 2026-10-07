@@ -1,0 +1,21 @@
+{
+  "project_id": "cde",
+  "canonical_name": "CDE",
+  "ecosystem": {
+    "registry_schema": "constellation.service.registry.v1",
+    "service_id": "cde",
+    "ecosystem_family": "chronicle",
+    "ecosystem_families": [
+      "chronicle"
+    ],
+    "layer": "platform.game-engine",
+    "role": "Content-driven deterministic game engine and authoring surface (platformer slice first; multi-genre target).",
+    "standalone_first": true,
+    "upstream_services": [],
+    "downstream_users": [],
+    "contract_families": [],
+    "service_map_path": "C:\\dev\\Constellation\\ecosystem\\SERVICE_MAP.md",
+    "registry_path": "C:\\dev\\Constellation\\registry\\services.json",
+    "integration_doc_path": "docs/canonical/ECOSYSTEM_INTEGRATION.md"
+  }
+}
